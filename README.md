@@ -1,0 +1,1 @@
+Análisis de PCA (análisis de componentes principales) y de Clustering sobre indicadores de sostenibilidad medioambiental, de la base de datos de Quality of Government, disponible aquí: https://www.gu.se/en/quality-government/qog-data/data-downloads/environmental-indicators-dataset
