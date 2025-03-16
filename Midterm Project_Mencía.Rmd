@@ -1,0 +1,725 @@
+---
+title: "Environmental Sustainability Index"
+author: "Mencía Gómez Luna"
+date: "2025-02-10"
+output:
+  html_document:
+    theme: cerulean
+    highlight: tango
+    toc: yes
+    df_print: paged
+
+---
+
+    
+```{=html}
+<style>
+body {
+text-align: justify}
+</style>
+```
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo=T, message=FALSE, warning=FALSE, knitr.purl.inline = TRUE )
+```
+
+## 1. Objective and Motivation
+
+The world has undergone a significant transformation in terms of **environmental sustainability in recent decades**. Today climate change mitigation and biodiversity protection have become global priorities, so that now countries have followed different laws and policies to ensure the wellfare of the environment. However, **this evolution has not been homogeneous throughout the world**: while some countries have implemented strict environmental policies, have opted for renewable energies and have protected large areas of their territory, others show a low capacity for ecological protection. That's why we want to answer some questions: 
+
+-  **Which country stands out for having a greater commitment to environmental sustainability?**
+- **And which shows the worst indicators in this regard?**
+
+
+We want to study these differences in the whole world creating an Index that can show us which countries are more environmental sustainable and which less: **The Environmental Sustainability Index**
+
+To make it possible we have to take into account that **there is not only one variable** that allows us to classify all the countries of a continent according to whether it is more or less sustainable. On the contrary, **there are many factors that influence**: their CO2 growth, CO2 per GDP, their amount of diversity, the amount of laws for environmental protection and other factors.
+
+**Methodology**: To construct the Environmental Sustainability Index, we apply **Principal Component Analysis (PCA) and Clustering** to classify countries according to their level of environmental sustainability. First, we use PCA to reduce the dimensionality of the data, combining multiple indicators (CO2 emissions, biodiversity, environmental laws, etc.) into a smaller set of principal components that explain the largest variance in the data. Then, we use Clustering (K-Means and hierarchical) to group countries with similar environmental characteristics, determining the optimal number of groups.
+
+Finally, with the results we will be able to have a global vision of the issue of this problem in the world and knowing which countries or areas are most advanced in terms of environmental sustainability.
+
+## 2. Downloading and preparing our data
+
+Before starting to analyze our data, it is essential to **clean our data and do feature engineering** so that we know our database and can perform the analysis correctly.
+
+First, we load the libraries we are going to use:
+
+```{r}
+library(haven)
+library (tidyverse)
+library (dplyr)
+library (corrplot)
+library(ggplot2)
+library(tidyr)
+library(mice)
+library(factoextra)
+library(plotly)
+library(countrycode)
+library (patchwork)
+library(rnaturalearth)
+library(rnaturalearthdata)
+library(rworldmap)
+library(cluster)
+library(mclust)
+library (plotly)
+
+```
+
+Now we load our database: the **QoG Environmental Indicators Dataset 2021**.
+
+This database contains information on various environmental indicators across different countries of the whole world. The data for each variable is taken from other studies and databases, and QoG groups all of them under the same database so that it is easy to use and analyze. **It includes data on air and water quality, biodiversity, carbon emissions, energy consumption, and other key environmental factors.**
+To this data we add the continents
+
+```{r}
+data <- read_dta("qog_ei_ts_sept21.dta")
+print(data)
+
+# Add continent's information
+data$continent <- countrycode(data$cname, origin = "country.name", destination = "continent")
+
+```
+
+## 3. Preprocess data and descriptive analysis
+
+### Data cleaning and organization
+
+Data cleaning implies eliminating duplicate or irrelevant observations, irrelevant variables, correcting typos or errors, handling outliers and dealing with missing values and so on.
+
+Here we are going to:
+
+-  Eliminate irrelevant variables and **keep 10-15 variables**
+-  Select only data for the **year 2016** (because we have data for each variable and nearly each country only for this year) 
+-   Handling missing values
+
+First, we **reduce the number of variables** since we have originally more than 400 variables. We keep those variables related to environmental sustainability, like carbon emissions, greenhouse gases, climate change policies, biodiversity and natural resource protection indexes, use of renewable energies...
+We check the variables in the Codebook and select the most important en related to our objectives. Then, we rename them for more clarity. Finally, we just filter the data for **year 2016**
+
+```{r}
+#Select most important variables and rename
+
+data_clean <- data |>
+  select (cname, continent, year, ccl_nmitlp, edgar_co2gdp, epi_bhv, epi_cda, epi_ghp, epi_par, epi_shi, ef_bcpc, ef_ef, gg_re_tpes, nrmi_nrpi) |>
+  rename(
+    country = cname,
+    climate_laws = ccl_nmitlp,
+    co2_per_gdp = edgar_co2gdp,
+    biodiversity = epi_bhv,
+    co2_growth = epi_cda,
+    greenhouse_capita = epi_ghp,
+    protected_areas = epi_par,
+    species = epi_shi,
+    biocapacity = ef_bcpc,
+    ecological_footprint = ef_ef,
+    renewable_energy = gg_re_tpes,
+    resource_protection = nrmi_nrpi
+  ) |>
+  filter(year==2016)  |> # Filter year 2016
+  select (country:continent, climate_laws:resource_protection) 
+
+```
+
+We have these 12 variables: 
+
+-   cname: Country
+-   continent: continent
+-   ccl_nmitlp: Number of climate change mitigation laws and policies 
+-   edgar_co2gdp:  CO2 emissions per GDP 
+-   epi_bhv:  Biodiversity habitat index
+-   epi_cda:  CO2 growth rate
+-   epi_ghp: GreenHouse Gas emissions per capita
+-   epi_par: Protected areas representativeness index
+-   epi_shi: Species habitat index
+-   ef_bcpc: Total Biocapacity
+-   ef_ef:  Total Ecological Footprint of Consumption
+-   gg_re_tpes:  Renewable energy supply, % TPES
+-   nrmi_nrpi: Natural Resource Protection Indicator
+
+All variables are **numeric**, except "country" and "continent" (our unit of analysis), so we won't have any problems related to this fact in the analysis.
+
+Now we are going to see if there are missing values and we try to fill them applying **Multiple Imputation with the Random Forest method**. This helps to fill in gaps by predicting missing data, reducing bias, and maintaining variability. This approach improves model accuracy and prevents data loss in complex datasets.
+
+Automatic Imputation of NAs:
+
+```{r}
+m = 4 # number of multiple imputations
+
+mice_mod <- mice(data_clean, m=m, method='rf')
+data_clean <- complete(mice_mod, action=m)
+
+```
+
+
+### Feature engineering and descriptive analysis
+
+Now that we have our data cleaned, we can go to the **feature engineering and extraction**. This section consists in the transformation or creation of variables (features) from the original data to improve model performance; in other words it's **transforming raw data into valuable predictors**
+
+In general, this process usually treats outliers, recodes certain variables (for example in dummies), scale or normalize variables and so on. In this section when trying to see outliers in the distributions, understand the scales of our variables, etc. **the engineering part will be mixed with the descriptive analysis**
+
+
+First, we will try to **see the outliers** and, if necessary, some variable will be recoded. Doing correctly this part is essential to perform a good model:
+
+```{r}
+numeric <- data_clean|>
+  select (-country, -continent)
+
+data_long <- gather(numeric, key = "Variable", value = "Value")
+
+# Boxplots:
+ggplot(data_long, aes(x = Variable, y = Value)) +
+  geom_boxplot() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+  labs(title = "Boxplots of the variables", x = "Variable", y = "Value")
+
+
+```
+
+As we see, we have a lot of outliers: we have some in biocapacity, climate laws, Co2 per GDP, ecological footprint, protected areas, renewable energies and species. **How do we deal with this outliers?**
+
+First, we are going to see their distribution to make decisions:
+
+```{r}
+# Histograms
+variables <- c("climate_laws", "co2_growth", "biocapacity", "ecological_footprint", "species", "protected_areas", "renewable_energy")
+
+par(mfrow=c(3,3))  
+for (var in variables) {
+  hist(data_clean[[var]], main=var, col="skyblue", breaks=30)
+}
+
+```
+
+
+For each variable we will apply a different method to treat outliers.
+
+In the case of those with a logarithmic pattern, we will apply a **logarithmic scale**: climate_laws, biocapacity and ecological_footprint. As we can see in the histograms:
+
+-  **Most countries have few climate laws**, with a high concentration at low values and a progressive decrease towards higher values, so it's useful to transform it into a logarithmic scale. This also tells us that in general the average of environmental policies in the world is low for the year of analysis (2016)
+-  The same happens for **biodiversity: most of the countries have low biodiversity values** in 2016 and decrease exponentially, so again we use a logarithmic scale. Once again, it seems somewhat worrying that almost the entire planet has very low biodiversity values, with hardly any exceptions.
+-  For ecological footprint we can see that **most of the countries have also low ecological footprint**, which is good for environmental sustainability. 
+
+
+```{r}
+# Logarithmic scale
+data_clean$climate_laws <- log1p(data_clean$climate_laws)
+data_clean$biocapacity <- log1p(data_clean$biocapacity)
+data_clean$ecological_footprint <- log1p(data_clean$ecological_footprint)
+
+```
+
+For the rest (protected_areas, renewable_energy, species) we apply manually **clipping** just converting those extreme values to keep them within limits: 
+
+-  Regarding **protected areas**, we see in the histogram that in general we have **countries with low values, medium values and even high values**, which is a good sign for sustainability. In this case we will only transform the values above 100 to 100 so that it remains within the limits.
+-  Regarding **renewable energies**, it happens similar to protected areas: not only are there cases where there are hardly any renewable energies, but **there are also countries that use them moderately and even with high values**. In this case, the extreme values are above 90.
+-  In the case of **species protection, there is a very high value in general throughout the planet** in 2016 , very positive for the sustainability of the environment. For this variable we will consider extreme values that are below 15 and apply clipping. Subsequently, we also apply a logarithmic scale since it follows that distribution
+
+```{r}
+# Manually clipping
+data_clean$renewable_energy[data_clean$renewable_energy > 100] <- 100
+data_clean$protected_areas[data_clean$protected_areas > 90] <- 90
+data_clean$species[data_clean$species <20] <- 20
+
+# Logarithmic scale for the "species variable" after clipping it
+data_clean$species <- log1p(data_clean$species)
+```
+
+For the variable **CO2 growth** we just keep the variable without changes because all the values seem to be relevant for the analysis, and there isn't a clear pattern in the distribution: **there are both countries with low and high growth in CO2 emissions**, although there are fewer cases of very high values
+
+Now we are going to do **some more descriptive analysis before scaling our variable** just to see the real values of the variables. The **scaling variables part is going to be done after de descriptive part** not to affect the real distribution of the variables.
+
+First we check that **there's some degree correlation between the variables** so we can continue with the analysis. Since all of them are numeric, we just perform the correlation.
+
+```{r}
+numeric <- data_clean|>
+  select(-country, -continent)
+
+correlation_matrix <- cor(numeric, use = "complete.obs")
+
+corrplot(correlation_matrix, method = "color", type = "upper", 
+         tl.col = "black", 
+         tl.srt = 45,      
+         addCoef.col = "black", 
+         number.cex = 0.4, 
+         col = colorRampPalette(c("blue", "white", "red"))(200))
+```
+
+
+In general, we see a moderate degree of correlation (between +/- 0,2 and 0,5 in general), with some low correlation between some Questions. 
+
+Some variables that are **highly and positive correlated** (> 0.4): 
+
+-  Co2 growth and ecological footprint
+-  Protected areas and resource protection
+-  Renewable energy and greenhouse emissions per capita 
+
+And some others with medium and positive correlation (0.2-0.3):
+
+-  Protected areas and biocapacity
+-  Biodiversity and biocapacity
+-  Climate laws and resource protection
+
+
+In general, in areas with more diversity and with more protected areas there is more biocapacity and vice versa; in areas with more protected areas there also tends to be more protection of resources; where there is more protection of resources there are also more climate laws. We also see that where there are more greenhouse gas emissions per capita there is more renewable energy, perhaps as a way to counteract the problems of harmful gases.
+
+Some variables that are **highly and negative correlated** (< -0.4): 
+
+-  Greenhouse emissions and Ecological footprint
+-  CO2 growth and renewable energy
+-  Ecological footprint and renewable energy
+
+Some other variables with medium and negative correlation (-0.2- -0.3):
+
+-  CO2 per GDP and Renewable energy
+-  Greenhouse gas emissions and biocapacity
+
+We see that  greater greenhouse gas emissions are negatively correlated with ecological footprint, which may be due to intermediate factors that we don't know (perhaps because greenhouse gases are compensated with other measures to avoid the ecological footprint). We also see that when renewable energies increase, CO2 and the ecological footprint decrease or vice versa. Finally, increasing greenhouse gases is related to a decrease in biocapacity and vice versa.
+
+
+Now we are going to do some interesting graphs to see some of these relationships more clearly:
+
+
+```{r}
+p1 <- ggplot(data_clean, aes(x = greenhouse_capita, 
+                             y = ecological_footprint, 
+                             color = continent)) + 
+  geom_point(alpha = 0.9) + 
+  theme_minimal() + 
+  labs(title = "Relation between Greenhouse Gas Emissions and Ecological Footprint", 
+       x = "Greenhouse Gas Emissions per Capita", 
+       y = "Ecological Footprint Consumption", 
+       color = "Continent")  # Agrega un título a la leyenda
+
+ggplotly(p1)  
+
+```
+
+There is a negative correlation between greenhouse emissions and the ecological footprint: when one goes up, the other goes down. This result looks a bit strange but maybe this can be explained because there may be intermediate variables that are influencing, for example, countries with more greenhouse gases may be taking more measures in other areas to counteract this and limit the carbon footprint. Additionally, in the graph we can see that the continents with the highest ecological footprint are mainly Europe and Asia, possibly due to the high levels of industrialization they have experienced. On the other hand, the continents with more greenhouse gas emissions are Africa, Asia and America, while Europe in general has medium-low levels of GHG emissions.
+
+
+```{r}
+# Protected areas and resources
+
+p2 <- ggplot(data_clean, aes(x = protected_areas, 
+                             y = resource_protection, 
+                             color = continent)) + 
+  geom_point(alpha = 0.9) + 
+  theme_minimal() + 
+  labs(title = "Relation between Protected Areas and Protected Resources", 
+       x = "Area Protection", 
+       y = "Resource Protection", 
+       color = "Continent")  
+
+ggplotly(p2)
+
+```
+
+Here we can observe a positive and moderate correlation between the area and resource protection, meaning that in general those countries with more resource protections, have also high levels in area protection. In nearly all continents there's a diversity of cases: countries with low levels in both variables and countries with high levels. In any case, we can highlight that America tends to have more cases with high levels of protection of areas and resources than the rest.
+
+Finally, after this descriptive analysis of the dataset we have seen that **some scales are reversed according to how our objetives are**. For example, there are variables where higher numbers mean "less sustainability", e.g *CO2 emissions per GDP*, while in other variables higher numbers mean "more sustainability", e.g *Biodiversity habitat index*. PCA and clustering aim to find patterns in the data, and if some variables are coded in reverse, it will mix these directions. This could lead to misleading results because PCA and clustering might treat these reversed variables as if they were aligned in the same way, causing confusion. So now we have to **reverse or invert scales** of some variables to make sure they are all pointing in the same direction (i.e., that they all consistently reflect a sustainability approach). 
+
+In this case we just have to reverse: CO2 growth, CO2 per GDP, Greenhouses gases per capita and Ecological Footprint, which are variables where originally high values mean "less sustainability" and we want the contrary:
+
+```{r}
+## Reverse the scale for CO2 and GHG emissions and for Ecological Footprint
+
+data_clean$co2_per_gdp <- max(data_clean$co2_per_gdp, na.rm = TRUE) - data_clean$co2_per_gdp
+data_clean$co2_growth <- max(data_clean$co2_growth, na.rm = TRUE) - data_clean$co2_growth
+data_clean$greenhouse_capita <- max(data_clean$greenhouse_capita, na.rm = TRUE) - data_clean$greenhouse_capita
+data_clean$ecological_footprint <- max(data_clean$ecological_footprint, na.rm = TRUE) - data_clean$ecological_footprint
+
+```
+
+Now we have to **scale the variables**, since there are differences in the scales. We are going to do it within the PCA and Clustering analysis:
+
+## 4. PCA
+
+To perform the Principal Component Analysis (PCA) on the Environmental Sustainability Index, the environmental variables are first **scaled to ensure comparability** and then PCA is applied to reduce the dimentionality, **extracting the principal components (variables) that explain the greatest variability in the data.**
+
+```{r}
+# PCA 
+pca <- prcomp(numeric, center = TRUE, scale. = TRUE)
+summary(pca)
+```
+
+PC1 is the principal component that **explains the most variance (28%)**, which means that PC1 captures most of the information of the original variables in our data set. PC2 (together with PC1) explains approximately 45% of the accumulated variance.
+
+```{r}
+fviz_screeplot(pca, addlabels = TRUE)
+```
+
+We see that the point where the decrease in explained variance begins to be more gradual is around PC4, since after PC4, the decrease in explained variance is much smoother. 
+
+**First component** 
+
+```{r}
+fviz_contrib(pca, choice = "var", axes = 1)
+
+```
+
+The red dashed line on the graph indicates **the expected average contribution**. If the contribution of the variables were uniform, the expected value would be 1/length(variables) = 1/11 = 9.1%
+
+We have 4 variable with a greater contribution to the variance of the first principal component (PC1) and are the most influential in its direction: (reverse) greenhouse gases, ecological footprint, renewable energy and (reverse) co2 growth
+
+Now we **check the direction of the PCA**: that is, positive values in the PCA mean more sustainability. In other words, an increase in PCA reflects improved sustainability performance.
+
+Although all the variables were in a scale where higher values meant more sustainability, the PCA does not necessarily preserve that direction.
+
+```{r}
+pca$rotation[,1]
+barplot(pca$rotation[, 1], las = 2, col = "darkblue")
+```
+
+As nearly all sustainability variables have negative coefficients, then it means that when the values of those variables increase, the value of PC1 decreases. In other words: **lower values of PC1 indicate higher sustainability**.
+
+
+We rank the countries according to the first component:
+
+```{r}
+# Separate the "country" variable
+country=data_clean$country
+continent = data_clean$continent
+
+#More sustainable
+country[order(pca$x[,1])][1:10]
+
+#Less sustainable
+country[order(pca$x[,1], decreasing=T)][1:10]
+
+```
+
+
+**Second component**: 
+
+Contribution of variables to second component
+
+```{r}
+fviz_contrib(pca, choice = "var", axes = 2)
+```
+
+The variables that most contribute to the second component are: resource protections, protected areas.
+
+We can also visualize with a barplot  if the variables have a positive or negative relationship with the 2nd component, that is, their directions:
+
+```{r}
+pca$rotation[,2]
+barplot(pca$rotation[, 2], las = 2, col = "darkblue")
+```
+
+Since most of the values are positive, we keep it this way: **the higher the PC2 is, the more sustainable the country is**
+
+Rank countries according to PCA2:
+
+```{r}
+#More sustainable
+country[order(pca$x[,2], decreasing=T)][1:10]
+
+#Less sustainable
+country[order(pca$x[,2])][1:10]
+
+```
+
+
+Now we **plot the first two scores**
+
+```{r}
+two_scores <- data.frame(z1=pca$x[,1], z2=pca$x[,2]) %>% 
+  ggplot(aes(z1, z2, label=country, color=continent)) + 
+  geom_point(size=0) +
+  labs(title="First two principal components (scores)", x="PC1", y="PC2") +
+  theme_bw() + 
+  theme(legend.position="bottom") + 
+  geom_text(size=3, hjust=0.6, vjust=0, check_overlap = TRUE)
+
+two_scores
+
+```
+
+*REMEMBER: As we saw in the First Component, the direction of the variables in PC1 is negative, meaning that higher PC1 values indicate less sustainability. On the contrary, higher PC2 values indicate greater sustainability.* 
+
+We see that those countries that are very far from the rest could have more unique and different characteristics such as Palau.
+
+Taking into account the two main components of the PCA, those countries with low PC1 and high PC2 are the most sustainable (that is, on the top left, like **Luxembourg, Australia, Canada**), while the opposite would be the least sustainable (on the bottom right, like **Afghanistan, Burundi or Eritrea**).
+
+**Which are the countries with more sustainability dimensions?**
+
+
+```{r}
+data.frame(z1 = pca$x[,1], country = data_clean$country) |>
+  group_by(country) |>
+  summarise(mean = mean(z1), n = n()) %>% 
+  arrange(mean)
+
+```
+**Palau is the best country in environmental sustainability dimensions**, followed by Luxembourg, Australia, Canada and the US. This means that they have the best characteristics in terms of environmental sustainability within the dimensions considered in the PCA1.
+
+
+**Which are the countries with less sustainability dimensions?** 
+
+```{r}
+data.frame(z1 = pca$x[,1], country = data_clean$country) |>
+  group_by(country) |>
+  summarise(mean = mean(z1), n = n()) %>% 
+  arrange(desc(mean))
+
+```
+
+**Burundi, Madagascar and Haiti are those countries with less sustainability dimensions**. They have the worst characteristics in terms of environmental sustainability within the dimensions considered in the PCA1.
+
+
+Now we represent this graphically:
+
+```{r}
+map_data <- data.frame(country = data_clean$country, pca1 = pca$x[,1])
+
+# convert to ISO3
+map_data$iso3 <- countrycode(map_data$country, 'country.name', 'iso3c')
+
+# map of the world
+world <- ne_countries(scale = "medium", returnclass = "sf")
+
+# Join
+world_map <- left_join(world, map_data, by = c("iso_a3" = "iso3"))
+
+# Final mapa
+map1 <- ggplot(data = world_map) +
+  geom_sf(aes(fill = pca1), color = "gray40", size = 0.1) +  
+  scale_fill_gradientn(
+    colors = c("green", "yellow", "red"),  
+    name = "PCA1 (Sustainability)"
+  ) +
+  theme_minimal() +
+  labs(title = "Environmental Sutainability Index (2016) based on PCA analysis",
+       caption = "Source: QoG (2016)") +
+  theme(legend.position = "bottom")
+
+map1
+```
+
+*Lower values = more sustainability in the First Component because of the direction of PC1, so:*
+
+We can clearly see some patterns, such as that **in the north of the map environmental sustainability dimensions are greater than in the south** (except for Australia, which also seems to have a high sustainability dimentions). Canada and Australia have stronger green colors which is positive for sustainability, perhaps because of their extensive natural resources or strong environmental policies. Also, Europe and North America generally appear to perform better in sustainability metrics, showing a dominant green color.
+
+In central Africa there are very low values of PCA1, which means that these countries face significant environmental challenges. That could be linked to deforestation, lack of environmental regulation and other priorities for their countries. Similarly, parts of the Middle East and South Asia also show lower sustainability levels, indicated by orange and red shades, which could be also because of exploitation of natural resources or pollution.
+
+
+
+## 5. Clustering
+
+Now we want to explore whether we can automatically organize the countries of the world based on a set of their sustainability indicators.
+
+While PCA identifies the combinations of variables that best explain the variability (principal components) to help us understand which variables are most relevant, with **clustering, observations are grouped into clusters according to their similarity, finding natural patterns or groups in the data**. In this way we can categorize countries into groups.
+
+### Partition method
+
+First we are using the **partition method** since it divides the data into a fixed number of groups. Specifically, we apply **k-means**, assigning each country to the nearest cluster based on similarity. This efficiently identifies natural groups in the data.
+
+But **how many groups/clusters are the optimal number** for our data and variables? 
+We can get some hints using different methods and comparing their results:
+
+1. WSS (Within-Cluster Sum of Squares)
+
+```{r}
+set.seed(123) #to make it reproducible
+
+fviz_nbclust(scale(numeric), kmeans, method = 'wss', k.max = 20, nstart = 1000)
+```
+
+With the WSS method, the optimal numbers of clusters is approximately 4 or 5 since these seems to be the inflection point. After these points the reduction in variance becomes more gradual.
+
+
+2. Silhouette
+
+```{r}
+set.seed(123)
+
+fviz_nbclust(scale(numeric), kmeans, method = 'silhouette', k.max = 10, nstart = 1000)
+```
+
+
+3. Gap Statistic
+
+```{r}
+set.seed(123)
+
+fviz_nbclust(scale(numeric), kmeans, method = 'gap_stat', k.max = 20, nstart = 100, nboot = 500)
+
+```
+
+
+Taking into account the results of the three methods, we can conclude that the average seems to be around 5 clusters, so we are going to **keep 5 clusters**.
+
+
+```{r fig.show='hold', dev='png'}
+
+set.seed(123)
+fit = kmeans (scale(numeric), centers=5, nstart=1000)
+
+k <- 5
+
+centers=fit$centers
+ 
+
+par(mfrow = c(2, 3))
+for (i in 1:k) {
+  barplot(centers[i, ], 
+          main = paste("Cluster", i, "Center"), 
+          las = 2, 
+          col = "darkblue",
+          ylim = c(min(centers), max(centers)))
+}
+par(mfrow = c(1, 1))
+```
+
+
+*Having inverted the scales of some variables we know that those that have positive values indicate high values of sustainability, and those that are negative are low for sustainability:*. 
+
+**IMPORTANT: When rendering, some of the values change, which is why the interpretation seems somewhat different from what is shown in the graphs**
+
+In general **Cluster 5 seems to group the most sustainable countries, while Cluster 3 or 4 those less sustainable**. Analyzing it more specifically, we can clearly see how **Cluster 2** groups countries with low biodiversity, with greenhouse gases and that don't use renewable energy, but have lower CO2 emissions, ecological footprint and protect their resources. In **Cluster 3** almost all variables have negative values, which is negative in general because it indicates less sustainability. For **Cluster 4** it also groups very unsustainable countries (even more than Cluster 3), since almost all the variables are negative, although we highlight that they use renewable energy and have lower greenhouse gas emissions. Finally, **Cluster 5** groups the countries with the most sustainability, the only failure is that they emit a lot of greenhouse gases.
+
+
+Now we see our results in a map:
+
+```{r}
+# create dataframe with country and cluster
+map <- data.frame(country = data_clean$country, value = as.factor(fit$cluster)) 
+
+# country to ISO3
+map$country <- countrycode(map$country, 'country.name', 'iso3c')
+
+# join data
+matched <- joinCountryData2Map(map, joinCode = "ISO3", nameJoinColumn = "country")
+
+# we define colores for each cluster
+cluster_colors <- c("purple", "blue", "orange", "red", "green")
+
+# final map with clusters
+mapCountryData(matched, 
+               nameColumnToPlot = "value",
+               missingCountryCol = "white",
+               borderCol = "#C7D9FF",
+               catMethod = "categorical", 
+               colourPalette = cluster_colors,  
+               mapTitle = "Clusters",
+               addLegend = TRUE)
+```
+
+
+Clusters 3 and 4 group countries with less environmental sustainable carachteristics, so we see that **most of Africa and Central Asia and India (which are in orange and red) are grouped in low environmental sustainability Clusters 3 and 4**. On the contrary, **in Cluster 5 we have those countries more sustainable: Canada, Russia and Latin America**.Regarding **Cluster 2 (Europe, the US and Mexico), these are countries at a medium level of environmental sustainability**: with good values in some variables, such as biodiversity and species, but poor in protected areas and resources. Finally, in **Cluster 1 are countries with a medium level of sustainability but that stand out for being the worst in species protection: Eastern Asia**
+
+It is very useful to know how countries are divided by regions and clusters along with their environmental characteristics and deficiencies, as it helps policymakers know how to establish realistic objectives to improve the levels of certain regions in terms of sustainability.
+
+We can see the same in a **clusplot**, although it's more difficult to see the clusters than in the map
+
+```{r}
+fviz_cluster(fit, data = scale(numeric), geom = "point", 
+             ellipse.type = "norm", pointsize = 1) +
+  theme_minimal() +
+  geom_text(aes(label = country), hjust = 0, vjust = 0, size = 2, check_overlap = FALSE) +
+  scale_fill_brewer(palette = "Paired")
+
+```
+
+### Hierarchical method
+
+We could also try to use the **hierarchical method** for clustering. This method organizes data into a tree structure showing how points cluster at different levels
+
+We decide first the distance (euclidean) and linkage (ward.D2):
+
+```{r}
+d = dist(scale(numeric), method = "euclidean")
+hc <- hclust(d,method="ward.D2")
+```
+
+We draw a **classical dendrogram**:
+
+```{r}
+hc$labels <- country
+
+fviz_dend(x = hc, 
+          k=5,
+          palette = "jco", 
+          rect = TRUE, rect_fill = TRUE, cex=0.5,
+          rect_border = "jco"          
+)
+
+```
+
+In general it is very difficult to visualize, although we can see how Palau has a unique Cluster for it since, as we saw in the PCA analysis, it's a country somewhat far from the rest. However, since in the dendogram is difficult to visualize it, we use a **phylogenic tree**:
+
+
+```{r}
+fviz_dend(x = hc,
+          k = 5,
+          color_labels_by_k = TRUE,
+          cex = 0.8,
+          type = "phylogenic",
+          repel = TRUE)+  labs(title="Environmental sustainability tree clustering") + theme(axis.text.x=element_blank(),axis.text.y=element_blank())
+```
+
+Here again we see Palau separated from the rest. We also find a group that is majority European and some from Latin America and the Caribbean. Then, other cluster groups Africa and South Asia, with developing economies that usually have challenges in facing environmental problems. Other cluster also groups African and Asian countries. Finally, the last cluster includes the United States, China, the Middle East and it seems that in general countries with great industrialization.
+
+We can see the same it in a **geographical map**:
+
+```{r}
+groups.hc = cutree(hc, k = 5)
+
+# Map our PCA index in a map:
+map = data.frame(country=country, value=groups.hc)
+
+#Convert the country code into iso3c using the function countrycode()
+map$country = countrycode(map$country, 'country.name', 'iso3c')
+
+#join data
+matched <- joinCountryData2Map(map, joinCode = "ISO3",
+                               nameJoinColumn = "country")
+#Draw the map
+mapCountryData(matched,nameColumnToPlot="value",missingCountryCol = "white",
+               borderCol = "#C7D9FF",
+               catMethod = "pretty", colourPalette = "rainbow",
+               mapTitle = c("Clusters"), lwd=1)
+
+```
+
+It's somewhat different from the results of the "k-means method". Here we see what already said with the tree clustering: we have in the same cluster Africa, some part of Latin America and India; then part of the industrialized countries like the US, Europe, China and also Argentina and Chile. Canada, Russia and Australia (more developed countries) form another cluster, and finally we have another cluster for east Asia
+
+Finally, in a **heatmap**:
+
+```{r}
+heatmap(scale(numeric), scale = "none", labRow = country,
+        distfun = function(x){dist(x, method = "euclidean")},
+        hclustfun = function(x){hclust(x, method = "ward.D2")},
+        cexRow = 0.7)
+```
+
+It is also ambiguous to understand, since here the countries (vertical axis) are grouped according to similarities in environmental variables (horizontal axis). The colors represent the intensity of each variable, with darker shades indicating higher or extreme values. The branches of the heatmap reflect which countries and variables are most related to each other.
+
+In general **the k-means clustering was more clear than he hierarchical method** and also it allowed us to see how each group was characterized, that is, in which variables they stood out for being more sustainable and in which they did not. So, in the conclusions we will focus more on the partition method:
+
+## 6. Conclusions
+
+The **Environmental Sustainability Index (2016)** developed in this study allows us to classify countries based on their ecological commitment and sustainability, revealing significant **disparities across the world**. Through **Principal Component Analysis (PCA)**, we identified key variables driving 45% of sustainability, such as greenhouse gas emissions, ecological footprint, renewable energy use, and CO2 growth (PC1). The **Clustering analysis** then grouped countries with similar environmental characteristics, highlighting global patterns of sustainability. Our results confirm that environmental commitment is not evenly distributed, with **notable contrasts** between different regions.
+
+We can see in the map those countries with more and less sustainability dimensions focus on the most relevant Component (PC1)
+
+```{r}
+map1
+```
+
+As we already pointed out, there are **clear differences between the global north and south in 2016**, with the north (and Australia) being much more sustainable. We see that those countries with the most sustainability dimensions were Palau, Luxembourg, Australia, Canada and the USA. This may be due to its greater economic development within environmental limitations, better infrastructure and stricter environmental regulations. Additionally, access to clean technology and renewable energy is broader in the global north.
+
+**In contrast, the global south faces greater challenges** due maybe to poverty, accelerated industrialization and dependence on natural resources. Examples or this with low sustainability are Burundi, Madagascar and Haiti. The lack of investment in sustainability also aggravates the problem in many southern countries. Likewise, historical inequalities and the impact of colonialism have influenced access to sustainable opportunities. Finally, climate change disproportionately affects the south, exacerbating its environmental and economic difficulties.
+
+
+Then, from the **clustering results**, we identified a cluster which emerged as the most environmentally sustainable group, including countries like Canada, Russia, and parts of Latin America, which exhibit **strong ecological policies, high biodiversity, and widespread use of renewable energy. However, even within this group, challenges remain**, such as high greenhouse gas emissions. There were also intermediate clusters, including most of **Europe, the US, and Mexico** with a medium level of sustainability. These countries demonstrate strengths in biodiversity and species protection but score poorly in protected areas and resource conservation. 
+
+On the opposite side, other clusters (3 and 4) contain the least sustainable countries, mainly located in Africa, Central Asia, and India. These nations face severe environmental issues, such as low biodiversity, high ecological footprint, and limited adoption of renewable energy. This may be due to the fact that many of these countries included in these clusters are still in the **process of development and industrialization, so environmental sustainability is not a priority in their political objectives.**
+
+In conclusion, answering our questions:
+
+-  **Which country stands out for having a greater commitment to environmental sustainability? And which shows the worst indicators?**
+
+In general, **the global north seems to have better indexes than the south.** Specifically, there is no doubt that **Canada or Australia stand out for sustainability since they stood out in both the PCA and clustering, while the least sustainable were countries either in Central Africa (such us Democratic Republic of Congo) or Central and East Asia (like India or Malaysia)**. This may be due above all to the priorities of the regions, since in the south they may have objectives more related to industrialization or the end of poverty, not so much to environmental sustainability.
+
+
+Our study provides a comprehensive perspective on global environmental sustainability, revealing which countries lead in sustainability and which lag behind. The **North-South divide in sustainability is evident, with northern countries generally more sustainable than southern ones, with exceptions like Australia**. These insights can help **policymakers design targeted environmental policies based on each country’s cluster characteristics**. 
